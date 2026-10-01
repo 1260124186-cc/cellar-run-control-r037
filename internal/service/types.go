@@ -43,35 +43,14 @@ type ReserveRunInput struct {
 }
 
 type ObservationInput struct {
-	Sequence     int
-	Gravity      float64
-	TemperatureC float64
-	ObservedAt   time.Time
-	Note         string
+	ExpectedVersion *int64
+	Sequence        int
+	Gravity         float64
+	TemperatureC    float64
+	ObservedAt      time.Time
+	Note            string
 }
 
 type FinishCleaningInput struct {
 	ExpectedVersion *int64
-}
-
-type preparedRunCommit struct {
-	Run    domain.PreparedRunTransition
-	Vessel *domain.Vessel
-}
-
-func (c preparedRunCommit) apply(snapshot *domain.Snapshot) error {
-	if err := c.Run.Apply(snapshot, c.Run.Run.ID); err != nil {
-		return err
-	}
-	if c.Vessel != nil {
-		snapshot.Vessels[c.Vessel.ID] = *c.Vessel
-	}
-	return nil
-}
-
-func (c *preparedRunCommit) withCommitTime(now time.Time) {
-	c.Run = c.Run.WithCommitTime(now)
-	if c.Vessel != nil {
-		c.Vessel.UpdatedAt = now.UTC()
-	}
 }

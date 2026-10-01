@@ -102,12 +102,17 @@ func registerRunRoutes(mux *http.ServeMux, app *service.Service) {
 		if !handleDecode(response, err) {
 			return
 		}
+		expected, err := expectedVersion(request)
+		if !handleDecode(response, err) {
+			return
+		}
 		run, err := app.AppendObservation(request.PathValue("id"), service.ObservationInput{
-			Sequence:     body.Sequence,
-			Gravity:      body.Gravity,
-			TemperatureC: body.TemperatureC,
-			ObservedAt:   body.ObservedAt,
-			Note:         body.Note,
+			ExpectedVersion: expected,
+			Sequence:        body.Sequence,
+			Gravity:         body.Gravity,
+			TemperatureC:    body.TemperatureC,
+			ObservedAt:      body.ObservedAt,
+			Note:            body.Note,
 		})
 		if err != nil {
 			writeDomainError(response, err)

@@ -63,9 +63,9 @@ func (s *Service) ReserveRun(
 	id string,
 	input ReserveRunInput,
 ) (domain.FermentationRun, domain.Vessel, error) {
-	var prepared preparedRunCommit
-	err := s.store.View(func(view domain.Snapshot) error {
-		snapshot := &view
+	var updatedRun domain.FermentationRun
+	var updatedVessel domain.Vessel
+	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
 		run, ok := snapshot.Runs[id]
 		if !ok {
 			return domain.NewError(domain.CodeRunNotFound, "run was not found")
@@ -88,20 +88,16 @@ func (s *Service) ReserveRun(
 		if err := run.ReserveVessel(vessel.ID, stamp); err != nil {
 			return err
 		}
-		prepared = preparedRunCommit{
-			Run:    domain.PreparedRunTransition{Run: run.Clone()},
-			Vessel: &vessel,
-		}
+		snapshot.Runs[id] = run.Clone()
+		snapshot.Vessels[vessel.ID] = vessel
+		updatedRun = run.Clone()
+		updatedVessel = vessel
 		return nil
 	})
 	if err != nil {
 		return domain.FermentationRun{}, domain.Vessel{}, err
 	}
-	prepared.withCommitTime(s.clock.Now())
-	if err := s.store.Execute(prepared.apply); err != nil {
-		return domain.FermentationRun{}, domain.Vessel{}, err
-	}
-	return prepared.Run.Run.Clone(), *prepared.Vessel, nil
+	return updatedRun, updatedVessel, nil
 }
 
 func (s *Service) StartRun(
