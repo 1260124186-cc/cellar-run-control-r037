@@ -6,14 +6,13 @@ func (s *Service) AppendObservation(
 	id string,
 	input ObservationInput,
 ) (domain.FermentationRun, error) {
-	receivedAt := s.clock.Now()
-	var prepared preparedRunCommit
-	err := s.store.View(func(view domain.Snapshot) error {
-		snapshot := &view
+	var committed domain.FermentationRun
+	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
 		run, ok := snapshot.Runs[id]
 		if !ok {
 			return domain.NewError(domain.CodeRunNotFound, "run was not found")
 		}
+		receivedAt := s.clock.Now()
 		observation := domain.GravityObservation{
 			RunID:        run.ID,
 			Sequence:     input.Sequence,
@@ -23,21 +22,20 @@ func (s *Service) AppendObservation(
 			Note:         input.Note,
 			ReceivedAt:   receivedAt,
 		}
-		plan, err := run.PrepareObservation(observation)
-		if err != nil {
+		// Validate against the committed run (state, sequence, and time
+		// ordering) inside the write transaction so a transition committed by
+		// a concurrent request makes this write fail instead of overwriting it.
+		if err := run.AddObservation(observation); err != nil {
 			return err
 		}
-		prepared = preparedRunCommit{Run: plan}
+		snapshot.Runs[id] = run.Clone()
+		committed = run.Clone()
 		return nil
 	})
 	if err != nil {
 		return domain.FermentationRun{}, err
 	}
-	prepared.withCommitTime(s.clock.Now())
-	if err := s.store.Execute(prepared.apply); err != nil {
-		return domain.FermentationRun{}, err
-	}
-	return prepared.Run.Run.Clone(), nil
+	return committed, nil
 }
 
 func (s *Service) BeginConditioning(
@@ -70,9 +68,9 @@ func (s *Service) CompleteRun(
 	id string,
 	input VersionInput,
 ) (domain.FermentationRun, domain.Vessel, error) {
-	var prepared preparedRunCommit
-	err := s.store.View(func(view domain.Snapshot) error {
-		snapshot := &view
+	var committedRun domain.FermentationRun
+	var committedVessel domain.Vessel
+	err := s.store.Execute(func(snapshot *domain.Snapshot) error {
 		run, ok := snapshot.Runs[id]
 		if !ok {
 			return domain.NewError(domain.CodeRunNotFound, "run was not found")
@@ -84,29 +82,31 @@ func (s *Service) CompleteRun(
 		if !ok {
 			return domain.NewError(domain.CodeFormulaNotFound, "attached formula was not found")
 		}
-		plan, err := run.PrepareCompletion(formula.TargetOriginalGravity)
-		if err != nil {
-			return err
-		}
-		if plan.Run.VesselID == nil {
+		if run.VesselID == nil {
 			return domain.NewError(domain.CodeRunState, "run has no vessel")
 		}
-		vessel, ok := snapshot.Vessels[*plan.Run.VesselID]
+		vessel, ok := snapshot.Vessels[*run.VesselID]
 		if !ok {
 			return domain.NewError(domain.CodeVesselNotFound, "vessel was not found")
 		}
-		if err := vessel.StartCleaning(plan.Run.ID, s.clock.Now()); err != nil {
+		stamp := s.clock.Now()
+		// Both aggregate transitions are applied to committed state in this
+		// transaction; an abort or observation committed in the meantime turns
+		// one of these checks into a stable failure with nothing written.
+		if err := run.Complete(formula.TargetOriginalGravity, stamp); err != nil {
 			return err
 		}
-		prepared = preparedRunCommit{Run: plan, Vessel: &vessel}
+		if err := vessel.StartCleaning(run.ID, stamp); err != nil {
+			return err
+		}
+		snapshot.Runs[id] = run.Clone()
+		snapshot.Vessels[vessel.ID] = vessel
+		committedRun = run.Clone()
+		committedVessel = vessel
 		return nil
 	})
 	if err != nil {
 		return domain.FermentationRun{}, domain.Vessel{}, err
 	}
-	prepared.withCommitTime(s.clock.Now())
-	if err := s.store.Execute(prepared.apply); err != nil {
-		return domain.FermentationRun{}, domain.Vessel{}, err
-	}
-	return prepared.Run.Run.Clone(), *prepared.Vessel, nil
+	return committedRun, committedVessel, nil
 }
